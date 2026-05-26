@@ -27,6 +27,9 @@ jobs:
       - name: Cross-ECU collision audit
         run: python3 -m tools.check_ids
 
+      - name: Bus-load estimate (fails > 80 % at 500 kbps)
+        run: python3 -m tools.bus_load
+
       - name: Generate artifacts into a scratch dir
         run: |
           python3 -m tools.gen_dbc      --out /tmp/dist

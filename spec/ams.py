@@ -30,6 +30,7 @@ def status_4a0() -> Message:
     return Message(
         0x4A0, "AMS_status", 8, "AMS",
         comment="500 ms cadence. Top-level supervisor snapshot.",
+        period_ms=500,
         signals=[
             Signal("fsm_state", LE(0, 8), unit="enum",
                    comment="See AMS_fsm_state enum below",
@@ -56,6 +57,7 @@ def pack_4a1() -> Message:
     return Message(
         0x4A1, "AMS_pack", 8, "AMS",
         comment="500 ms cadence. Pack energy-state.",
+        period_ms=500,
         signals=[
             Signal("pack_voltage_mV", LE(0, 32),
                    minimum=0, maximum=600_000, unit="mV"),
@@ -71,6 +73,7 @@ def temps_4a2() -> Message:
         comment=("500 ms cadence. Bytes 3..4 carry dc_bus_V (flight) or "
                  "diag probes (HIL_STUB). Byte 5 is the always-on cockpit "
                  "byte (#251)."),
+        period_ms=500,
         signals=[
             Signal("min_tempC", LE(0, 8, signed=True), unit="degC"),
             Signal("max_tempC", LE(1, 8, signed=True), unit="degC"),
@@ -96,6 +99,7 @@ def ok_precharge_020() -> Message:
     return Message(
         0x020, "ECU_ok_precharge", 1, "AMS",
         comment="100 ms. 1 iff FSM in {Run, Charge}.",
+        period_ms=100,
         signals=[Signal("ok_precharge", LE(0, 8), unit="bool")],
     )
 
@@ -104,6 +108,7 @@ def vmin_pack_12c() -> Message:
     return Message(
         0x12C, "ECU_v_cell_min", 2, "AMS",
         comment="100 ms. Pack-wide min cell voltage.",
+        period_ms=100,
         signals=[Signal("v_cell_min_mV", BE(0, 16),
                         minimum=0, maximum=5000, unit="mV")],
     )
@@ -116,6 +121,7 @@ def vmod(can_id: int, mods: list, kind: str, suffix: str) -> Message:
     return Message(
         can_id, f"ECU_v{kind}_module_{suffix}", dlc, "AMS",
         comment=f"100 ms. Per-module v{kind} for modules {mods}.",
+        period_ms=100,
         signals=[
             Signal(f"v{kind}_module_{mod}", BE(2 * i, 16),
                    minimum=0, maximum=5000, unit="mV",
@@ -129,6 +135,7 @@ def currents_135() -> Message:
     return Message(
         0x135, "ECU_currents", 4, "AMS",
         comment="50 ms (the fast lane). Pack + DCDC currents.",
+        period_ms=50,
         signals=[
             Signal("pack_current_dA", BE(0, 16, signed=True),
                    factor=0.1, minimum=-825, maximum=825, unit="A",
@@ -155,6 +162,7 @@ def tmax_mod(can_id: int, mods: list, suffix: str,
     return Message(
         can_id, f"ECU_tmax_module_{suffix}", dlc, "AMS",
         comment=f"250 ms. Per-module max temp for modules {mods}.",
+        period_ms=250,
         signals=sigs,
     )
 
@@ -165,6 +173,7 @@ def vcu_100() -> Message:
     return Message(
         0x100, "VCU_dc_bus_heartbeat", 2, "VCU",
         comment="20 Hz from VCU. AMS consumes for mode-lock + DC bus.",
+        period_ms=50,
         signals=[Signal("dc_bus_V", LE(0, 16),
                         minimum=0, maximum=600, unit="V")],
     )
@@ -227,6 +236,8 @@ def pit_cells() -> list:
                      "cell_index = 4*frame_idx + slot; "
                      "module = cell_index // 19; cell = cell_index % 19. "
                      "0xFFFF in any slot = no cell at that index."),
+            period_ms=1000,
+            condition="pit_diag_enabled",
             signals=sigs,
         ))
     return out
@@ -250,6 +261,8 @@ def pit_temps() -> list:
             comment=("Pit-diag NTC-temp frame. Decode: "
                      "temp_index = 8*frame_idx + slot; "
                      "module = temp_index // 40; temp = temp_index % 40."),
+            period_ms=1000,
+            condition="pit_diag_enabled",
             signals=sigs,
         ))
     return out
@@ -261,6 +274,8 @@ def pit_fsm_status_6c0() -> Message:
     return Message(
         0x6C0, "PitDiag_fsm_status", 8, "AMS",
         comment="FSM extended status. 1 Hz when pit-diag enabled.",
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("fsm_state", LE(0, 8), unit="enum",
                    enum={0: "Start", 1: "Precharge", 2: "Transition",
@@ -280,6 +295,8 @@ def pit_timing_6c1() -> Message:
     return Message(
         0x6C1, "PitDiag_timing", 8, "AMS",
         comment="V-poll cadence + last temp-sweep failure mask.",
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("bms_volt_poll_ms",     BE(0, 16), unit="ms"),
             Signal("bms_volt_poll_max_ms", BE(2, 16), unit="ms"),
@@ -295,6 +312,8 @@ def pit_balance_a_6c2() -> Message:
         comment=("Balance DCC bits for cell indices 0..63. Bit b of byte i "
                  "represents cell (8*i + b). Decode: module = cell_idx // 19, "
                  "cell = cell_idx % 19."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[Signal("dcc_bits_lo64", LE(0, 64), unit="bitmask")],
     )
 
@@ -304,6 +323,8 @@ def pit_balance_b_6c3() -> Message:
         0x6C3, "PitDiag_balance_mask_b", 8, "AMS",
         comment=("Balance DCC bits for cell indices 64..94 + per-cycle "
                  "counters. Bits 64..94 occupy bytes 0..3 (low 31 bits)."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("dcc_bits_hi32", LE(0, 32), unit="bitmask",
                    comment="Low 31 bits = cells 64..94; bit 31 reserved 0"),
@@ -319,6 +340,8 @@ def pit_boot_diag_6c4() -> Message:
     return Message(
         0x6C4, "PitDiag_boot_diag", 8, "AMS",
         comment="Reset reason + App_InitTask milestone + FDCAN1 start result.",
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("jump_reason", LE(0, 32), unit="enum",
                    enum={0:          "ColdPOR",
@@ -337,6 +360,8 @@ def pit_post_mortem_6c5() -> Message:
         0x6C5, "PitDiag_post_mortem", 8, "AMS",
         comment=("FreeRTOS stack-overflow + malloc-failed hooks "
                  "(captured to .bss; survives soft reset)."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("stack_overflow_seen", LE(0, 8), unit="bool",
                    comment="1 if g_stack_overflow_task_addr != 0"),
@@ -361,6 +386,8 @@ def pit_pec_per_ic_a_6c7() -> Message:
                  "g_ltc_pec_err_count[i] saturated. Modules: ic 0,1 = "
                  "module 0; ic 2,3 = module 1; ic 4,5 = module 2; "
                  "ic 6,7 = module 3."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal(f"pec_err_ic_{i}", LE(i, 8), unit="count",
                    comment=f"Chain IC {i} (module {i // 2}, "
@@ -377,6 +404,8 @@ def pit_pec_per_ic_b_6c8() -> Message:
         0x6C8, "PitDiag_pec_per_ic_b", 8, "AMS",
         comment=("Per-IC PEC error count, ICs 8..9 + 6 reserved bytes. "
                  "Same encoding as 0x6C7."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("pec_err_ic_8", LE(0, 8), unit="count",
                    comment="Chain IC 8 (module 4, upper LTC6811)"),
@@ -391,6 +420,8 @@ def pit_fw_id_6c6() -> Message:
         0x6C6, "PitDiag_fw_id", 8, "AMS",
         comment=("Firmware identification (post-IFS08-CE-AMS#252). Populated "
                  "from VERSION file + git rev-parse at configure time."),
+        period_ms=1000,
+        condition="pit_diag_enabled",
         signals=[
             Signal("fw_version_major", LE(0, 8), unit="semver"),
             Signal("fw_version_minor", LE(1, 8), unit="semver"),
