@@ -96,6 +96,16 @@ class Message:
     sender: str
     signals: List[Signal] = field(default_factory=list)
     comment: str = ""
+    # Steady-state cadence in milliseconds. None for one-shot / on-demand
+    # frames (BL trigger, pit-diag enable/ACK, boot-trace). Used by
+    # tools/bus_load.py to estimate bus utilisation; not surfaced in
+    # the DBC itself.
+    period_ms: Optional[int] = None
+    # When this frame is *conditionally* emitted (e.g. pit-diag stream
+    # only when enabled, charger-only frames only in Charge state),
+    # set the condition name. bus_load.py groups by condition so the
+    # report shows base-load vs worst-case-with-everything-on.
+    condition: str = "always"
 
     @property
     def hex_id(self) -> str:
