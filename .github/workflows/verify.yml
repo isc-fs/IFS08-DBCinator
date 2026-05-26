@@ -35,11 +35,5 @@ jobs:
       - name: Parse each DBC with cantools
         run: |
           for f in dist/*.dbc; do
-            echo "::group::$f"
-            python3 -c "
-import cantools, sys
-db = cantools.database.load_file('$f')
-print(f'{len(db.messages)} messages, {sum(len(m.signals) for m in db.messages)} signals')
-"
-            echo "::endgroup::"
+            python3 -c "import sys, cantools; db = cantools.database.load_file(sys.argv[1]); print(f'{sys.argv[1]}: {len(db.messages)} messages, {sum(len(m.signals) for m in db.messages)} signals')" "$f"
           done

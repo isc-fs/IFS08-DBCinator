@@ -63,9 +63,7 @@ jobs:
         run: |
           python3 -m tools.check_ids
           for f in dist/*.dbc; do
-            python3 -c "
-import cantools; cantools.database.load_file('$f')
-print('parse OK: $f')"
+            python3 -c "import sys, cantools; cantools.database.load_file(sys.argv[1]); print('parse OK:', sys.argv[1])" "$f"
           done
 
       - name: Generate per-release changelog
