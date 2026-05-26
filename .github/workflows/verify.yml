@@ -32,8 +32,9 @@ jobs:
 
       - name: Generate artifacts into a scratch dir
         run: |
-          python3 -m tools.gen_dbc      --out /tmp/dist
-          python3 -m tools.gen_c_header --out /tmp/dist
+          python3 -m tools.gen_dbc       --out /tmp/dist
+          python3 -m tools.gen_c_header  --out /tmp/dist
+          python3 -m tools.gen_cpp_codec --out /tmp/dist
           ls -la /tmp/dist
 
       - name: Parse each DBC with cantools
@@ -49,3 +50,9 @@ jobs:
           int main(void) { return 0; }
           EOF
           gcc -I/tmp/dist -fsyntax-only /tmp/header_smoke.c
+
+      - name: C++ codec roundtrip test (encode == decode on every message)
+        run: |
+          g++ -std=c++17 -I/tmp/dist -Wall -Wextra -O2 \
+              /tmp/dist/ifs08_can_codecs_roundtrip.cpp -o /tmp/codec_roundtrip
+          /tmp/codec_roundtrip
