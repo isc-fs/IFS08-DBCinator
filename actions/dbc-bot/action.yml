@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: proprietary
+#
+# Composite action: the dbcinator bot's per-PR DBC regeneration step.
+#
+# Consumer firmware repos invoke this from their own
+# .github/workflows/dbc-bot.yml. The action:
+#
+#   1. Mints a short-lived install token via the `dbcinator` GitHub App.
+#   2. Checks out the PR HEAD with that token (so the bot can push back).
+#   3. Configures CMake host-build and builds the caller-named dump target.
+#   4. Runs the dump tool, writes a fresh DBC, diffs against the in-tree one.
+#   5. If different: commits + pushes onto the PR branch as `dbcinator[bot]`.
+#   6. Posts (or edits) a structured wire-contract diff comment on the PR.
+#
+# Skipped automatically for PRs from forks (cannot push back to fork branches).
+#
+# Tracked by isc-fs/IFS08-DBCinator#5.
+
+name: dbc-bot
+description: Regenerate the in-tree DBC from the firmware's code-first DSL and push it onto the PR branch.
+
+inputs:
+  app-id:
+    description: GitHub App ID for the `dbcinator` App. Pass via secrets.DBCINATOR_APP_ID.
+    required: true
+  private-key:
+    description: PEM private key for the `dbcinator` App. Pass via secrets.DBCINATOR_PRIVATE_KEY.
+    required: true
+  dbc-path:
+    description: Path (relative to repo root) of the in-tree DBC the bot maintains.
+    required: false
+    default: docs/dbc/ams.dbc
+  cmake-source-dir:
+    description: CMake source directory for the host build that produces the dump tool.
+    required: false
+    default: tests/unit
+  cmake-build-dir:
+    description: CMake binary directory for the host build.
+    required: false
+    default: build-dbc-bot
+  dump-target:
+    description: CMake target name that, when built, produces the DBC dumper binary.
+    required: false
+    default: dbc_dump
+  dump-binary-path:
+    description: Path to the dumper binary (relative to cmake-build-dir) once built.
+    required: false
+    default: dbc_dump
+  comment-tool:
+    description: Path to the diff-comment script. Defaults to the one shipped in this repo.
+    required: false
+    default: ${{ github.action_path }}/../../tools/dbc_pr_comment.py
+
+runs:
+  using: composite
+  steps:
+    # -----------------------------------------------------------------
+    # Bail out cleanly on fork PRs. GITHUB_TOKEN can't push to forks, so
+    # there's nothing useful the bot can do here.
+    # -----------------------------------------------------------------
+    - name: Skip on fork PRs
+      if: github.event.pull_request.head.repo.full_name != github.repository
+      shell: bash
+      run: |
+        echo "::notice::PR is from a fork (${{ github.event.pull_request.head.repo.full_name }}); skipping dbcinator regeneration."
+        exit 0
+
+    # -----------------------------------------------------------------
+    # Bot identity: short-lived install token, scoped to THIS repo.
+    # -----------------------------------------------------------------
+    - name: Mint dbcinator install token
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      id: bot
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id:      ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+
+    # -----------------------------------------------------------------
+    # Check out the PR HEAD with the bot's token so push-back works.
+    # fetch-depth: 0 so the diff-comment script can see the prior DBC
+    # on `main` / `dev` for the structured comparison.
+    # -----------------------------------------------------------------
+    - name: Checkout PR HEAD
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      uses: actions/checkout@v4
+      with:
+        ref:          ${{ github.event.pull_request.head.ref }}
+        token:        ${{ steps.bot.outputs.token }}
+        fetch-depth:  0
+        submodules:   recursive
+
+    - name: Set up Python + cantools
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install cantools
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: pip install cantools
+
+    # -----------------------------------------------------------------
+    # Build the dump tool host-side. The firmware repo decides which
+    # CMake target produces the binary -- we don't assume.
+    # -----------------------------------------------------------------
+    - name: Configure CMake (host)
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: cmake -B "${{ inputs.cmake-build-dir }}" -S "${{ inputs.cmake-source-dir }}"
+
+    - name: Build dump target
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: cmake --build "${{ inputs.cmake-build-dir }}" --target "${{ inputs.dump-target }}"
+
+    # -----------------------------------------------------------------
+    # Regenerate the DBC into a tmp file and compare against the
+    # in-tree copy. cmp exit code: 0 = identical, 1 = differ, 2 = error.
+    # -----------------------------------------------------------------
+    - name: Regenerate DBC into tmp
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: |
+        "${{ inputs.cmake-build-dir }}/${{ inputs.dump-binary-path }}" > /tmp/regenerated.dbc
+
+    - name: Compare against in-tree DBC
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      id: diff
+      shell: bash
+      run: |
+        if cmp -s /tmp/regenerated.dbc "${{ inputs.dbc-path }}"; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=true"  >> "$GITHUB_OUTPUT"
+        fi
+
+    # -----------------------------------------------------------------
+    # Build the human-readable diff BEFORE committing, so we can quote
+    # the prior on-disk DBC. The script handles both "DBC is new" and
+    # "DBC changed" cases internally.
+    # -----------------------------------------------------------------
+    - name: Build structured wire-contract diff
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: |
+        python3 "${{ inputs.comment-tool }}" \
+          --before "${{ inputs.dbc-path }}" \
+          --after  /tmp/regenerated.dbc \
+          --pr     "${{ github.event.number }}" \
+          --repo   "${{ github.repository }}" \
+          --output /tmp/dbc_comment.md
+
+    # -----------------------------------------------------------------
+    # If the DBC drifted, write it back into the tree, commit, push.
+    # -----------------------------------------------------------------
+    - name: Commit regenerated DBC
+      if: ${{ github.event.pull_request.head.repo.full_name == github.repository && steps.diff.outputs.changed == 'true' }}
+      shell: bash
+      run: |
+        cp /tmp/regenerated.dbc "${{ inputs.dbc-path }}"
+        git config user.name  "dbcinator[bot]"
+        git config user.email "dbcinator[bot]@users.noreply.github.com"
+        git add "${{ inputs.dbc-path }}"
+        git commit -m "chore(dbc): regenerate from .def files
+
+        Auto-generated by dbcinator bot. Source of truth lives in the
+        code-first CAN DSL; this file is a derived artefact and must
+        not be hand-edited."
+        git push origin HEAD:"${{ github.event.pull_request.head.ref }}"
+
+    # -----------------------------------------------------------------
+    # Post (or edit) the wire-contract diff comment. --edit-last keeps
+    # re-runs from stacking duplicate comments on the same PR.
+    # -----------------------------------------------------------------
+    - name: Post wire-contract diff comment
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.bot.outputs.token }}
+      run: |
+        gh pr comment "${{ github.event.number }}" \
+          --repo      "${{ github.repository }}" \
+          --body-file /tmp/dbc_comment.md \
+          --edit-last 2>/dev/null \
+        || gh pr comment "${{ github.event.number }}" \
+          --repo      "${{ github.repository }}" \
+          --body-file /tmp/dbc_comment.md
