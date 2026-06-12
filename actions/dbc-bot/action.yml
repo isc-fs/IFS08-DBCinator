@@ -47,12 +47,7 @@ inputs:
     required: false
     default: dbc_dump
   comment-tool:
-    description: |
-      Override path to the diff-comment script. Leave unset to use the one
-      shipped in this repo at tools/dbc_pr_comment.py (resolved at runtime
-      via github.action_path). `${{ github.action_path }}` is not evaluated
-      in input defaults, hence this is empty and substituted inside the
-      "Build structured wire-contract diff" step below.
+    description: Override path to the diff-comment script. Leave unset to use the one shipped in this repo at tools/dbc_pr_comment.py (resolved at runtime in the diff step).
     required: false
     default: ""
 
