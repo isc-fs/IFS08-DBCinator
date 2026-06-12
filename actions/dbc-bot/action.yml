@@ -47,9 +47,14 @@ inputs:
     required: false
     default: dbc_dump
   comment-tool:
-    description: Path to the diff-comment script. Defaults to the one shipped in this repo.
+    description: |
+      Override path to the diff-comment script. Leave unset to use the one
+      shipped in this repo at tools/dbc_pr_comment.py (resolved at runtime
+      via github.action_path). `${{ github.action_path }}` is not evaluated
+      in input defaults, hence this is empty and substituted inside the
+      "Build structured wire-contract diff" step below.
     required: false
-    default: ${{ github.action_path }}/../../tools/dbc_pr_comment.py
+    default: ""
 
 runs:
   using: composite
@@ -145,7 +150,13 @@ runs:
       if: github.event.pull_request.head.repo.full_name == github.repository
       shell: bash
       run: |
-        python3 "${{ inputs.comment-tool }}" \
+        # Resolve the comment-tool path: caller override wins; otherwise
+        # use the script that ships in this action's repo.
+        tool="${{ inputs.comment-tool }}"
+        if [ -z "$tool" ]; then
+          tool="${{ github.action_path }}/../../tools/dbc_pr_comment.py"
+        fi
+        python3 "$tool" \
           --before "${{ inputs.dbc-path }}" \
           --after  /tmp/regenerated.dbc \
           --pr     "${{ github.event.number }}" \
