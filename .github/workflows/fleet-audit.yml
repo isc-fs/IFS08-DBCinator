@@ -1,0 +1,84 @@
+name: Fleet audit
+
+# Nightly cross-repo wire-contract check. Pulls the current `dev` DBC
+# from each ECU firmware repo, runs the collision audit (catches IDs
+# claimed by two senders, DLC mismatches, signal unit drift across
+# repos) and the bus-load estimator across the union, and opens an
+# issue if anything fails.
+#
+# Passive monitor. Does not gate any release pipeline.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues:   write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cantools
+        run: pip install cantools
+
+      # Pull each repo's current dev DBC. Repos that don't ship a DBC
+      # yet (ECU / UDV / DASH pre-adoption) 404 and are skipped without
+      # failing the job; check_ids just runs over the ones that exist.
+      - name: Pull each ECU DBC
+        run: |
+          mkdir -p /tmp/dbcs
+          set -e
+          for repo in IFS08-CE-AMS IFS08-CE-ECU IFS08-CE-UDV IFS08-CE-DASH; do
+            name=$(echo "$repo" | sed 's/^IFS08-CE-//' | tr '[:upper:]' '[:lower:]')
+            url="https://raw.githubusercontent.com/isc-fs/$repo/dev/docs/dbc/$name.dbc"
+            if curl -fsSL "$url" -o "/tmp/dbcs/$name.dbc"; then
+              echo "fetched $name.dbc ($(wc -l < /tmp/dbcs/$name.dbc) lines)"
+            else
+              echo "::notice::no DBC at $url -- skipping $repo"
+            fi
+          done
+          ls -la /tmp/dbcs/
+
+      - name: Cross-repo collision audit
+        id: audit
+        continue-on-error: true
+        run: |
+          args=""
+          for f in /tmp/dbcs/*.dbc; do args="$args --dbc $f"; done
+          python3 -m tools.check_ids $args | tee /tmp/check_ids.log
+
+      - name: Bus-load estimate
+        id: busload
+        continue-on-error: true
+        run: |
+          args=""
+          for f in /tmp/dbcs/*.dbc; do args="$args --dbc $f"; done
+          python3 -m tools.bus_load $args | tee /tmp/bus_load.log
+
+      - name: Open / update tracking issue on failure
+        if: steps.audit.outcome == 'failure' || steps.busload.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Fleet audit failing"
+          body=$(printf '%s\n\n```\n%s\n\n%s\n```\n' \
+            "Nightly fleet audit failed on $(date -u +%Y-%m-%d)." \
+            "$(cat /tmp/check_ids.log 2>/dev/null || true)" \
+            "$(cat /tmp/bus_load.log  2>/dev/null || true)")
+
+          # Find or open the tracking issue. One per repo, reused across runs.
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+                     --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --label fleet-audit
+          fi

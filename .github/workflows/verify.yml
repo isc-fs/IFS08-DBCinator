@@ -1,9 +1,14 @@
 name: Verify
 
-# Source-of-truth = spec/*.py.  dist/ is not committed -- consumers
-# generate at build time. CI's job is: confirm the spec compiles to
-# valid DBCs and a parseable C header, and that no cross-ECU
-# collisions slipped in.
+# Self-test for the runtime tools. Downloads the current dev DBC from
+# IFS08-CE-AMS (the only repo on the code-first DSL today), runs the
+# collision audit and the bus-load estimator against it. Fails the
+# build if either flags an issue.
+#
+# The composite action in actions/dbc-bot/ is consumed by per-repo
+# workflows; it isn't tested here (no PR-event harness). The fleet
+# audit in fleet-audit.yml runs the same tools against the union of
+# all ECU repos' tagged DBCs on a cron.
 
 on:
   push:
@@ -13,7 +18,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify:
+  audit-self-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,35 +29,31 @@ jobs:
       - name: Install cantools
         run: pip install cantools
 
-      - name: Cross-ECU collision audit
-        run: python3 -m tools.check_ids
+      - name: Pull AMS dev DBC
+        run: |
+          mkdir -p /tmp/dbcs
+          curl -fsSL \
+            https://raw.githubusercontent.com/isc-fs/IFS08-CE-AMS/dev/docs/dbc/ams.dbc \
+            -o /tmp/dbcs/ams.dbc
+          wc -l /tmp/dbcs/ams.dbc
+
+      - name: Cross-repo collision audit
+        run: python3 -m tools.check_ids --dbc /tmp/dbcs/ams.dbc
 
       - name: Bus-load estimate (fails > 80 % at 500 kbps)
-        run: python3 -m tools.bus_load
+        run: python3 -m tools.bus_load --dbc /tmp/dbcs/ams.dbc
 
-      - name: Generate artifacts into a scratch dir
+      - name: PR-comment renderer smoke (unchanged + initialising paths)
         run: |
-          python3 -m tools.gen_dbc       --out /tmp/dist
-          python3 -m tools.gen_c_header  --out /tmp/dist
-          python3 -m tools.gen_cpp_codec --out /tmp/dist
-          ls -la /tmp/dist
+          # Render an unchanged comment.
+          python3 tools/dbc_pr_comment.py \
+            --before /tmp/dbcs/ams.dbc --after /tmp/dbcs/ams.dbc \
+            --pr 0 --repo self-test --output /tmp/unchanged.md
+          grep -q "wire contract unchanged" /tmp/unchanged.md
 
-      - name: Parse each DBC with cantools
-        run: |
-          for f in /tmp/dist/*.dbc; do
-            python3 -c "import sys, cantools; db = cantools.database.load_file(sys.argv[1]); print(f'{sys.argv[1]}: {len(db.messages)} messages, {sum(len(m.signals) for m in db.messages)} signals')" "$f"
-          done
-
-      - name: C header smoke-compile (gcc -fsyntax-only)
-        run: |
-          cat > /tmp/header_smoke.c <<'EOF'
-          #include "ifs08_can_ids.h"
-          int main(void) { return 0; }
-          EOF
-          gcc -I/tmp/dist -fsyntax-only /tmp/header_smoke.c
-
-      - name: C++ codec roundtrip test (encode == decode on every message)
-        run: |
-          g++ -std=c++17 -I/tmp/dist -Wall -Wextra -O2 \
-              /tmp/dist/ifs08_can_codecs_roundtrip.cpp -o /tmp/codec_roundtrip
-          /tmp/codec_roundtrip
+          # Render an initialising comment.
+          : > /tmp/empty.dbc
+          python3 tools/dbc_pr_comment.py \
+            --before /tmp/empty.dbc --after /tmp/dbcs/ams.dbc \
+            --pr 0 --repo self-test --output /tmp/init.md
+          grep -q "initialising wire contract" /tmp/init.md
